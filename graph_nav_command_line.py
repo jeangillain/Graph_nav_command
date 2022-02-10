@@ -101,6 +101,7 @@ class GraphNavInterface(object):
             '8': self._navigate_to_anchor,
             '9': self._clear_graph,
             '0': self._navigate_all,
+            'a' : self._navigate_all_no_rotate,
         }
     def _issue_robot_command(self, command, endtime=None):
         """Check that the lease has been acquired and motors are powered on before issuing a command.
@@ -343,21 +344,23 @@ class GraphNavInterface(object):
             # the robot down once it is finished.
             is_finished = self._check_success(nav_to_cmd_id)
         list_rotation = []
-        list_rotation.append([0,0.0,math.pi/3])
-        list_rotation.append([0,0,-math.pi/3])
-        list_rotation.append([0,math.pi/2.5,0])
-        list_rotation.append([0,-math.pi/2.5,0])
+        #list_rotation.append([0,0.0,math.pi/2])
+        list_rotation.append([math.pi/2,0.0,0])
+        list_rotation.append([0,0,math.pi/2])
+        list_rotation.append([0,-math.pi/2,0])
+        list_rotation.append([0,math.pi/2,0])
+        #list_rotation.append([0,math.pi/2,0])
+        #list_rotation.append([0,-math.pi/2,0])
         
         for elem in list_rotation:
-            print("toujours pas c'est quoi ça du coup ? ")
             sublease = self._lease.create_sublease()
-
+            print("elem : ", elem)
             orientation = EulerZXY(elem[0],elem[1],elem[2])
             print("hello")
             cmd = RobotCommandBuilder.synchro_stand_command(body_height=0,
                                                     footprint_R_body=orientation)
             self._robot_command_client.robot_command(cmd, end_time_secs=2,lease=sublease.lease_proto)
-            time.sleep(3)  # Sleep for half a second to allow for command execution.
+            time.sleep(1)  # Sleep for half a second to allow for command execution.
 
         self._lease = self._lease_wallet.advance()
         self._lease_keepalive = LeaseKeepAlive(self._lease_client)
@@ -406,24 +409,65 @@ class GraphNavInterface(object):
                 # the robot down once it is finished.
                 is_finished = self._check_success(nav_to_cmd_id)
             list_rotation = []
-            list_rotation.append([0,0.0,math.pi/3])
-            list_rotation.append([0,0,-math.pi/3])
-            list_rotation.append([0,math.pi/3,0])
-            list_rotation.append([0,-math.pi/3,0])
+            list_rotation.append([0,0,math.pi/2])
+            list_rotation.append([0,0,-math.pi/2])
+            list_rotation.append([0,-math.pi/2,0])
+            list_rotation.append([0,math.pi/2,0])
             if is_finished: 
                 for elem in list_rotation:
-                    print("toujours pas c'est quoi ça du coup ? ")
+                    print("allez on est ou là ? ")
+                    print("elem : ", elem)
+
                     self._lease = self._lease_wallet.advance()
                     sublease = self._lease.create_sublease()
-
                     orientation = EulerZXY(elem[0],elem[1],elem[2])
                     print("hello")
+                    print(orientation)
                     cmd = RobotCommandBuilder.synchro_stand_command(body_height=0,
                                                             footprint_R_body=orientation)
                     self._robot_command_client.robot_command(cmd, end_time_secs=2,lease=sublease.lease_proto)
                     time.sleep(2)  # Sleep for half a second to allow for command execution.
 
-        
+    def _navigate_all_no_rotate(self, *args):
+        """Navigate through a specific route of waypoints."""
+        self._lease = self._lease_wallet.advance()
+        if not self.toggle_power(should_power_on=True):
+            print("Failed to power on the robot, and cannot complete navigate to request.")
+            return
+        for waypoint in self._waypoint_to_timestamp: 
+            waypoint_id = waypoint[0]
+            waypoint_id = graph_nav_util.find_unique_waypoint_id(
+                waypoint_id, self._current_graph, self._current_annotation_name_to_wp_id)
+            sublease = self._lease.create_sublease()
+            self._lease_keepalive.shutdown()
+            nav_to_cmd_id = None
+            # Navigate to the destination waypoint.
+            is_finished = False
+            while not is_finished:
+                # Issue the navigation command about twice a second such that it is easy to terminate the
+                # navigation command (with estop or killing the program).
+                try:
+                    max_vel_linear = geometry_pb2.Vec2(x=0.5, y=0.5)
+                    max_vel_se2 = geometry_pb2.SE2Velocity(linear=max_vel_linear,
+                                            angular=0.5)
+                    travel_params = self._graph_nav_client.generate_travel_params(0.0,0.0,geometry_pb2.SE2VelocityLimit(max_vel=max_vel_se2))
+                    destination_waypoint = graph_nav_util.find_unique_waypoint_id(
+                    waypoint_id, self._current_graph, self._current_annotation_name_to_wp_id)
+
+                    nav_to_cmd_id = self._graph_nav_client.navigate_to(destination_waypoint, 1.0,
+                                                                    leases=[sublease.lease_proto],
+                                                                    command_id=nav_to_cmd_id,travel_params =travel_params)
+                except ResponseError as e:
+                    print("Error while navigating {}".format(e))
+                    break
+                time.sleep(.5)  # Sleep for half a second to allow for command execution.
+                # Poll the robot for feedback to determine if the navigation command is complete. Then sit
+                # the robot down once it is finished.
+                is_finished = self._check_success(nav_to_cmd_id)
+        if self._powered_on and not self._started_powered_on:
+            # Sit the robot down + power off after the navigation command is complete.
+            self.toggle_power(should_power_on=False)
+            
         
         
     def _navigate_route(self,*args):
@@ -568,7 +612,7 @@ class GraphNavInterface(object):
                 When yaw is not specified, an identity quaternion is used.
             (9) Clear the current graph.
             (0) Create a full path of the downloaded path. (This is not optimised we could say that we should go to the nearest waypoint and not the first.)
-
+            (a) Execute full path without rotation at speed x :0.5, y:0.5 and angular 0.5
             (q) Exit.
             """)
             try:
